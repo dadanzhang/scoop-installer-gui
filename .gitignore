@@ -1,0 +1,20 @@
+# 临时文件
+*.tmp
+*.temp
+
+# 日志文件
+*.log
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# IDE 文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 二进制文件
+*.exe
+*.dll
