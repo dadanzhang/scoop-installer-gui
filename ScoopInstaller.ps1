@@ -9,13 +9,12 @@ $defaultTools = @(
     "nodejs",
     "python",
     "curl",
-    "vscode",
     "terraform"
 )
 
 # 创建主窗体
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Scoop 一键安装工具"
+$form.Text = "Scoop 一键安装工具 (国内镜像版)"
 $form.Size = New-Object System.Drawing.Size(800, 700)
 $form.StartPosition = "CenterScreen"
 $form.MaximizeBox = $false
@@ -71,6 +70,20 @@ $pathValidLabel.Location = New-Object System.Drawing.Point(20, 70)
 $pathValidLabel.Size = New-Object System.Drawing.Size(300, 20)
 $envTab.Controls.Add($pathValidLabel)
 
+# 网络设置区域
+$networkLabel = New-Object System.Windows.Forms.Label
+$networkLabel.Text = "网络设置:"
+$networkLabel.Location = New-Object System.Drawing.Point(520, 20)
+$networkLabel.Size = New-Object System.Drawing.Size(100, 20)
+$envTab.Controls.Add($networkLabel)
+
+$useMirrorCheckBox = New-Object System.Windows.Forms.CheckBox
+$useMirrorCheckBox.Text = "使用国内镜像"
+$useMirrorCheckBox.Location = New-Object System.Drawing.Point(520, 45)
+$useMirrorCheckBox.Size = New-Object System.Drawing.Size(120, 20)
+$useMirrorCheckBox.Checked = $true
+$envTab.Controls.Add($useMirrorCheckBox)
+
 # 环境检测按钮
 $checkEnvButton = New-Object System.Windows.Forms.Button
 $checkEnvButton.Text = "检测环境"
@@ -106,6 +119,15 @@ $addBucketButton.Size = New-Object System.Drawing.Size(100, 30)
 $addBucketButton.Enabled = $false
 $envTab.Controls.Add($addBucketButton)
 
+# 一键安装按钮
+$oneClickInstallButton = New-Object System.Windows.Forms.Button
+$oneClickInstallButton.Text = "一键安装（推荐）"
+$oneClickInstallButton.Location = New-Object System.Drawing.Point(20, 550)
+$oneClickInstallButton.Size = New-Object System.Drawing.Size(150, 40)
+$oneClickInstallButton.BackColor = [System.Drawing.Color]::LightGreen
+$oneClickInstallButton.Font = New-Object System.Drawing.Font("Microsoft Sans Serif", 9, [System.Drawing.FontStyle]::Bold)
+$envTab.Controls.Add($oneClickInstallButton)
+
 # 环境设置日志
 $envLogTextBox = New-Object System.Windows.Forms.TextBox
 $envLogTextBox.Multiline = $true
@@ -117,8 +139,8 @@ $envTab.Controls.Add($envLogTextBox)
 
 # 环境设置进度条
 $envProgressBar = New-Object System.Windows.Forms.ProgressBar
-$envProgressBar.Location = New-Object System.Drawing.Point(20, 550)
-$envProgressBar.Size = New-Object System.Drawing.Size(720, 20)
+$envProgressBar.Location = New-Object System.Drawing.Point(180, 560)
+$envProgressBar.Size = New-Object System.Drawing.Size(560, 20)
 $envProgressBar.Visible = $false
 $envTab.Controls.Add($envProgressBar)
 
@@ -257,6 +279,7 @@ function Update-PathValidation {
         $pathValidLabel.Text = "❌ 路径不能为空"
         $pathValidLabel.ForeColor = [System.Drawing.Color]::Red
         $setPathButton.Enabled = $false
+        $oneClickInstallButton.Enabled = $false
         return $false
     }
     
@@ -264,12 +287,14 @@ function Update-PathValidation {
         $pathValidLabel.Text = "✅ 路径格式正确"
         $pathValidLabel.ForeColor = [System.Drawing.Color]::Green
         $setPathButton.Enabled = $true
+        $oneClickInstallButton.Enabled = $true
         return $true
     }
     else {
         $pathValidLabel.Text = "❌ 路径包含中文或格式不正确"
         $pathValidLabel.ForeColor = [System.Drawing.Color]::Red
         $setPathButton.Enabled = $false
+        $oneClickInstallButton.Enabled = $false
         return $false
     }
 }
@@ -308,6 +333,7 @@ function Check-ExecutionPolicy {
         Add-EnvLog "⚠️  当前设置阻止运行Scoop安装脚本"
         Add-EnvLog "💡 解决方案: 点击'修复执行策略'按钮自动修复"
         $fixPolicyButton.Enabled = $true
+        return $false
     }
     elseif ($currentPolicy -eq "RemoteSigned" -or $currentPolicy -eq "Unrestricted" -or $currentPolicy -eq "Bypass") {
         Add-EnvLog "✅ 执行策略检测通过: $currentPolicy"
@@ -316,11 +342,13 @@ function Check-ExecutionPolicy {
         $setPathButton.Enabled = $true
         
         Update-PathValidation
+        return $true
     }
     else {
         Add-EnvLog "❓ 未知的执行策略: $currentPolicy"
         Add-EnvLog "💡 建议: 点击'修复执行策略'按钮设置为推荐值"
         $fixPolicyButton.Enabled = $true
+        return $false
     }
 }
 
@@ -336,12 +364,20 @@ function Fix-ExecutionPolicy {
         Add-EnvLog "✅ 执行策略修复命令已执行"
         Add-EnvLog "🔄 重新检测执行策略..."
         Start-Sleep -Seconds 1
-        Check-ExecutionPolicy
+        
+        if (Check-ExecutionPolicy) {
+            return $true
+        } else {
+            Add-EnvLog "❌ 修复后检测仍然失败"
+            $fixPolicyButton.Enabled = $true
+            return $false
+        }
     }
     catch {
         Add-EnvLog "❌ 修复失败: $($_.Exception.Message)"
         Add-EnvLog "💡 请尝试以管理员身份运行此脚本"
         $fixPolicyButton.Enabled = $true
+        return $false
     }
     finally {
         $envProgressBar.Visible = $false
@@ -359,7 +395,55 @@ function Test-ScoopInstalled {
     }
 }
 
-# 安装 Scoop 函数
+# 测试网络连接
+function Test-NetworkConnection {
+    param([string]$Url)
+    
+    try {
+        $request = [System.Net.WebRequest]::Create($Url)
+        $request.Timeout = 10000 # 10秒超时
+        $response = $request.GetResponse()
+        $response.Close()
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+# 下载文件函数（支持重试）
+function Download-FileWithRetry {
+    param([string]$Url, [string]$OutputPath, [int]$MaxRetries = 3)
+    
+    for ($i = 1; $i -le $MaxRetries; $i++) {
+        try {
+            Add-EnvLog "→ 尝试下载 ($i/$MaxRetries): $Url"
+            
+            # 使用WebClient下载
+            $webClient = New-Object System.Net.WebClient
+            $webClient.DownloadFile($Url, $OutputPath)
+            
+            if (Test-Path $OutputPath -PathType Leaf) {
+                $fileSize = (Get-Item $OutputPath).Length
+                if ($fileSize -gt 0) {
+                    Add-EnvLog "✅ 下载成功，文件大小: $($fileSize) 字节"
+                    return $true
+                }
+            }
+        }
+        catch {
+            Add-EnvLog "⚠️ 下载失败: $($_.Exception.Message)"
+            if ($i -lt $MaxRetries) {
+                Add-EnvLog "🔄 等待3秒后重试..."
+                Start-Sleep -Seconds 3
+            }
+        }
+    }
+    
+    return $false
+}
+
+# 安装 Scoop 函数（使用国内镜像源）
 function Install-Scoop {
     if ([string]::IsNullOrEmpty($env:SCOOP)) {
         Add-EnvLog "❌ 请先设置 Scoop 安装路径"
@@ -380,45 +464,241 @@ function Install-Scoop {
     $envProgressBar.Style = "Marquee"
     
     try {
-        Add-EnvLog "→ 执行安装命令: irm get.scoop.sh | iex"
+        # 检查是否使用国内镜像
+        $useMirror = $useMirrorCheckBox.Checked
         
-        # 使用后台作业安装
-        $installJob = Start-Job -ScriptBlock {
-            param($Path)
-            $env:SCOOP = $Path
-            Invoke-RestMethod get.scoop.sh | Invoke-Expression
-            return $LASTEXITCODE
-        } -ArgumentList $dirTextBox.Text.Trim()
-        
-        # 等待安装完成
-        while ($installJob.State -eq "Running") {
-            Start-Sleep -Milliseconds 500
-            [System.Windows.Forms.Application]::DoEvents()
+        if ($useMirror) {
+            Add-EnvLog "🌐 使用国内镜像源安装..."
+            return Install-Scoop-WithMirror
+        } else {
+            Add-EnvLog "🌐 使用官方源安装..."
+            return Install-Scoop-Official
         }
+    }
+    catch {
+        Add-EnvLog "❌ 安装过程中出现错误: $($_.Exception.Message)"
+        Add-EnvLog "💡 建议: 检查网络连接，或尝试使用国内镜像"
+        $installScoopButton.Enabled = $true
+        return $false
+    }
+    finally {
+        $envProgressBar.Visible = $false
+    }
+}
+
+# 使用国内镜像安装 Scoop
+function Install-Scoop-WithMirror {
+    $installScriptPath = Join-Path $env:TEMP "scoop-install.ps1"
+    
+    # 国内镜像源列表（按优先级排序）
+    $mirrors = @(
+        @{Name = "Gitee镜像"; Url = "https://gitee.com/scoop-installer/install/raw/master/install.ps1"},
+        @{Name = "GitHub代理"; Url = "https://ghproxy.com/https://raw.githubusercontent.com/ScoopInstaller/Install/master/install.ps1"},
+        @{Name = "FastGit镜像"; Url = "https://raw.fastgit.org/ScoopInstaller/Install/master/install.ps1"}
+    )
+    
+    # 尝试从各个镜像源下载
+    $downloadSuccess = $false
+    foreach ($mirror in $mirrors) {
+        Add-EnvLog "→ 尝试从 $($mirror.Name) 下载..."
         
-        $result = Receive-Job -Job $installJob
-        Remove-Job -Job $installJob
+        if (Download-FileWithRetry -Url $mirror.Url -OutputPath $installScriptPath) {
+            $downloadSuccess = $true
+            break
+        }
+    }
+    
+    if (-not $downloadSuccess) {
+        Add-EnvLog "❌ 所有镜像源下载失败，尝试官方源..."
+        return Install-Scoop-Official
+    }
+    
+    # 修改安装脚本使用国内镜像
+    Add-EnvLog "→ 配置使用国内镜像源..."
+    try {
+        $scriptContent = Get-Content $installScriptPath -Raw -ErrorAction Stop
         
-        if ($result -eq 0 -or (Test-ScoopInstalled)) {
+        # 替换GitHub地址为国内镜像
+        $scriptContent = $scriptContent -replace 'https://github.com/ScoopInstaller/Scoop', 'https://gitee.com/scoop-installer/scoop'
+        $scriptContent = $scriptContent -replace 'https://raw.githubusercontent.com/ScoopInstaller/', 'https://gitee.com/scoop-installer/'
+        
+        Set-Content -Path $installScriptPath -Value $scriptContent -Force -ErrorAction Stop
+        Add-EnvLog "✅ 镜像配置完成"
+    }
+    catch {
+        Add-EnvLog "⚠️ 镜像配置失败，但继续安装: $($_.Exception.Message)"
+    }
+    
+    # 运行安装脚本
+    Add-EnvLog "→ 运行 Scoop 安装脚本..."
+    
+    try {
+        # 设置环境变量
+        $env:SCOOP = $dirTextBox.Text.Trim()
+        [Environment]::SetEnvironmentVariable('SCOOP', $dirTextBox.Text.Trim(), 'User')
+        
+        # 运行下载的安装脚本
+        & $installScriptPath -RunAsAdmin:$false
+        
+        # 检查安装是否成功
+        Start-Sleep -Seconds 3
+        if (Test-ScoopInstalled) {
             Add-EnvLog "✅ Scoop 安装成功！"
+            Add-EnvLog "🎉 版本信息: $(scoop --version)"
+            
+            # 配置Scoop使用国内镜像
+            Configure-ScoopMirror
+            
             $addBucketButton.Enabled = $true
             $installExtrasButton.Enabled = $true
             $installToolsButton.Enabled = $true
             return $true
         }
         else {
-            Add-EnvLog "❌ Scoop 安装失败，请检查网络连接"
-            $installScoopButton.Enabled = $true
-            return $false
+            Add-EnvLog "❌ Scoop 安装失败，尝试备用方法..."
+            return Install-Scoop-Backup
+        }
+    }
+    finally {
+        # 清理临时文件
+        if (Test-Path $installScriptPath) {
+            Remove-Item $installScriptPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# 使用官方源安装 Scoop
+function Install-Scoop-Official {
+    $installScriptPath = Join-Path $env:TEMP "scoop-install.ps1"
+    
+    # 官方源
+    $officialUrl = "https://raw.githubusercontent.com/ScoopInstaller/Install/master/install.ps1"
+    
+    Add-EnvLog "→ 从官方源下载安装脚本..."
+    if (-not (Download-FileWithRetry -Url $officialUrl -OutputPath $installScriptPath)) {
+        Add-EnvLog "❌ 官方源下载失败，尝试备用方法..."
+        return Install-Scoop-Backup
+    }
+    
+    # 运行安装脚本
+    Add-EnvLog "→ 运行 Scoop 安装脚本..."
+    
+    try {
+        # 设置环境变量
+        $env:SCOOP = $dirTextBox.Text.Trim()
+        [Environment]::SetEnvironmentVariable('SCOOP', $dirTextBox.Text.Trim(), 'User')
+        
+        # 运行下载的安装脚本
+        & $installScriptPath -RunAsAdmin:$false
+        
+        # 检查安装是否成功
+        Start-Sleep -Seconds 3
+        if (Test-ScoopInstalled) {
+            Add-EnvLog "✅ Scoop 安装成功！"
+            Add-EnvLog "🎉 版本信息: $(scoop --version)"
+            
+            $addBucketButton.Enabled = $true
+            $installExtrasButton.Enabled = $true
+            $installToolsButton.Enabled = $true
+            return $true
+        }
+        else {
+            Add-EnvLog "❌ Scoop 安装失败，尝试备用方法..."
+            return Install-Scoop-Backup
+        }
+    }
+    finally {
+        # 清理临时文件
+        if (Test-Path $installScriptPath) {
+            Remove-Item $installScriptPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# 备用安装方法
+function Install-Scoop-Backup {
+    Add-EnvLog "🔄 尝试备用安装方法..."
+    
+    try {
+        # 方法1: 使用scoop-cn提供的离线安装
+        Add-EnvLog "→ 尝试使用 scoop-cn 离线安装..."
+        
+        # 设置环境变量
+        $env:SCOOP = $dirTextBox.Text.Trim()
+        [Environment]::SetEnvironmentVariable('SCOOP', $dirTextBox.Text.Trim(), 'User')
+        
+        # 使用scoop-cn的安装命令
+        $installCommand = @"
+iex (new-object net.webclient).downloadstring('https://gitee.com/glsnames/scoop-installer/raw/master/bin/install.ps1')
+"@
+        
+        Invoke-Expression $installCommand
+        
+        # 检查安装是否成功
+        Start-Sleep -Seconds 3
+        if (Test-ScoopInstalled) {
+            Add-EnvLog "✅ 备用安装方法成功！"
+            
+            # 配置国内镜像
+            Configure-ScoopMirror
+            
+            $addBucketButton.Enabled = $true
+            $installExtrasButton.Enabled = $true
+            $installToolsButton.Enabled = $true
+            return $true
+        }
+        else {
+            throw "备用安装方法验证失败"
         }
     }
     catch {
-        Add-EnvLog "❌ 安装过程中出现错误: $($_.Exception.Message)"
-        $installScoopButton.Enabled = $true
+        Add-EnvLog "❌ 备用安装方法失败: $($_.Exception.Message)"
+        Show-ManualDownloadInstructions
         return $false
     }
-    finally {
-        $envProgressBar.Visible = $false
+}
+
+# # 配置Scoop使用国内镜像
+# function Configure-ScoopMirror {
+#     Add-EnvLog "🔄 配置Scoop使用国内镜像..."
+    
+#     try {
+#         # 添加scoop-cn国内源
+#         scoop bucket add scoop-cn https://gitee.com/duzyn/scoop-cn 2>$null
+#         Add-EnvLog "✅ 已添加 scoop-cn 国内源"
+        
+#         # 配置git使用代理（可选）
+#         git config --global url."https://ghproxy.com/https://github.com".insteadOf "https://github.com" 2>$null
+        
+#         Add-EnvLog "✅ Scoop镜像配置完成"
+#         return $true
+#     }
+#     catch {
+#         Add-EnvLog "⚠️ 镜像配置失败，但不影响基本使用: $($_.Exception.Message)"
+#         return $false
+#     }
+# }
+
+# 显示手动下载说明
+function Show-ManualDownloadInstructions {
+    Add-EnvLog "========================================"
+    Add-EnvLog "📋 手动安装说明:"
+    Add-EnvLog "1. 访问 https://gitee.com/scoop-installer/install"
+    Add-EnvLog "2. 下载 install.ps1 文件到当前目录"
+    Add-EnvLog "3. 手动运行: .\install.ps1 -ScoopDir '$($dirTextBox.Text)'"
+    Add-EnvLog "4. 或使用 scoop-cn 离线安装"
+    Add-EnvLog "========================================"
+    
+    # 显示对话框提示
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        "自动安装失败，是否打开手动安装说明页面？", 
+        "安装失败", 
+        [System.Windows.Forms.MessageBoxButtons]::YesNo, 
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+    
+    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+        Start-Process "https://gitee.com/scoop-installer/install"
     }
 }
 
@@ -623,6 +903,156 @@ function Select-NoneTools {
     Add-ToolsLog "✅ 已取消选择所有工具"
 }
 
+# 一键安装功能
+function OneClick-Install {
+    if (-not (Update-PathValidation)) {
+        Add-EnvLog "❌ 请先修正路径问题"
+        return
+    }
+    
+    Add-EnvLog "🚀 开始一键安装流程..."
+    Add-EnvLog "========================================"
+    
+    # 禁用所有按钮
+    $checkEnvButton.Enabled = $false
+    $fixPolicyButton.Enabled = $false
+    $setPathButton.Enabled = $false
+    $installScoopButton.Enabled = $false
+    $addBucketButton.Enabled = $false
+    $oneClickInstallButton.Enabled = $false
+    $oneClickInstallButton.Text = "安装中..."
+    
+    $envProgressBar.Visible = $true
+    $envProgressBar.Style = "Continuous"
+    
+    try {
+        # 步骤1: 检测执行策略
+        $envProgressBar.Value = 10
+        Add-EnvLog "## 步骤 1: 检测 PowerShell 执行策略"
+        if (-not (Check-ExecutionPolicy)) {
+            Add-EnvLog "## 自动修复执行策略"
+            if (-not (Fix-ExecutionPolicy)) {
+                throw "执行策略修复失败"
+            }
+        }
+        
+        # 步骤2: 设置安装路径
+        $envProgressBar.Value = 30
+        Add-EnvLog "## 步骤 2: 设置 Scoop 安装路径"
+        if (-not (Set-ScoopPath -Path $dirTextBox.Text.Trim())) {
+            throw "安装路径设置失败"
+        }
+        
+        # 步骤3: 安装 Scoop
+        $envProgressBar.Value = 50
+        Add-EnvLog "## 步骤 3: 安装 Scoop"
+        if (-not (Install-Scoop)) {
+            throw "Scoop 安装失败"
+        }
+        
+        # # 步骤4: 添加 Extras Bucket
+        # $envProgressBar.Value = 70
+        # Add-EnvLog "## 步骤 4: 添加 Extras Bucket"
+        
+        # 切换到工具选项卡执行此步骤
+        $tabControl.SelectedTab = $toolsTab
+        # Add-ToolsLog "📚 正在添加 Extras Bucket..."
+        
+        # $result = scoop bucket add extras 2>&1
+        # if ($LASTEXITCODE -eq 0) {
+        #     Add-ToolsLog "✅ Extras Bucket 添加成功！"
+        # }
+        # elseif ($result -like "*already exists*") {
+        #     Add-ToolsLog "✅ Extras Bucket 已存在"
+        # }
+        # else {
+        #     Add-ToolsLog "⚠️ Extras Bucket 添加失败，但继续安装工具"
+        # }
+        
+        # 步骤5: 安装默认工具
+        $envProgressBar.Value = 80
+        Add-ToolsLog "## 步骤 5: 安装默认开发工具"
+        
+        $selectedTools = $defaultTools
+        $successCount = 0
+        $totalCount = $selectedTools.Count
+        
+        for ($i = 0; $i -lt $totalCount; $i++) {
+            $tool = $selectedTools[$i]
+            $progress = 80 + [int]((($i + 1) / $totalCount) * 15)
+            $envProgressBar.Value = $progress
+            
+            Add-ToolsLog "📦 正在安装 $tool ... ($($i+1)/$totalCount)"
+            
+            try {
+                $result = scoop install $tool 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Add-ToolsLog "✅ $tool 安装成功"
+                    $successCount++
+                }
+                else {
+                    if ($result -like "*already installed*") {
+                        Add-ToolsLog "✅ $tool 已经安装"
+                        $successCount++
+                    }
+                    else {
+                        Add-ToolsLog "❌ $tool 安装失败: $result"
+                    }
+                }
+            }
+            catch {
+                Add-ToolsLog "❌ $tool 安装过程中出现错误: $($_.Exception.Message)"
+            }
+            
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+        
+        # 完成
+        $envProgressBar.Value = 100
+        Add-ToolsLog "========================================"
+        Add-ToolsLog "🎉 一键安装完成！"
+        Add-ToolsLog "✅ 成功安装 $successCount/$totalCount 个工具"
+        Add-ToolsLog "📖 您现在可以使用所有安装的开发工具了"
+        
+        # 显示完成提示
+        [System.Windows.Forms.MessageBox]::Show(
+            "一键安装完成！`n`nScoop 已成功安装到: $($dirTextBox.Text)`n`n成功安装 $successCount/$totalCount 个开发工具。", 
+            "安装完成", 
+            [System.Windows.Forms.MessageBoxButtons]::OK, 
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        
+        # 切换回环境选项卡
+        $tabControl.SelectedTab = $envTab
+    }
+    catch {
+        Add-EnvLog "❌ 一键安装失败: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show(
+            "安装过程中出现错误: $($_.Exception.Message)`n`n请查看日志了解详细信息。", 
+            "安装失败", 
+            [System.Windows.Forms.MessageBoxButtons]::OK, 
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+    }
+    finally {
+        # 重新启用按钮
+        $checkEnvButton.Enabled = $true
+        $setPathButton.Enabled = $true
+        $installScoopButton.Enabled = $true
+        $addBucketButton.Enabled = $true
+        $oneClickInstallButton.Enabled = $true
+        $oneClickInstallButton.Text = "一键安装（推荐）"
+        $envProgressBar.Visible = $false
+        
+        # 更新修复按钮状态
+        $currentPolicy = Get-ExecutionPolicy
+        $fixPolicyButton.Enabled = ($currentPolicy -eq "Restricted")
+        
+        # 更新路径验证
+        Update-PathValidation
+    }
+}
+
 # 浏览文件夹对话框
 function Show-FolderBrowser {
     $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -687,6 +1117,10 @@ $selectNoneButton.Add_Click({
     Select-NoneTools
 })
 
+$oneClickInstallButton.Add_Click({
+    OneClick-Install
+})
+
 $browseButton.Add_Click({
     Show-FolderBrowser
 })
@@ -697,7 +1131,7 @@ $dirTextBox.Add_TextChanged({
 })
 
 # 启动时自动检测和初始化
-Add-EnvLog "🚀 Scoop 一键安装工具已启动"
+Add-EnvLog "🚀 Scoop 一键安装工具已启动 (国内镜像版)"
 Add-EnvLog "⏳ 开始自动环境检测..."
 Check-ExecutionPolicy
 
